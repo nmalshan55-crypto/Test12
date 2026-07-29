@@ -121,7 +121,6 @@ async function downloadSessionFromMega() {
             writeStream.on('error', reject);
         });
 
-        // Unzip Session
         const unzipper = require('unzipper');
         await fs.createReadStream(zipPath).pipe(unzipper.Extract({ path: AUTH_DIR })).promise();
         if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
@@ -207,8 +206,63 @@ async function startBot() {
     });
 }
 
+// 🌐 Pairing Web Interface
 app.get('/', (req, res) => {
-    res.send(`<h2>${BOT_NAME} Active! Loaded Plugins: ${commands.size}</h2>`);
+    res.send(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>${BOT_NAME} - Pairing Code</title>
+            <style>
+                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background: #0b141a; color: #e9edef; margin: 0; }
+                .card { background: #111b21; padding: 30px; border-radius: 16px; text-align: center; width: 85%; max-width: 380px; box-shadow: 0 10px 30px rgba(0,0,0,0.6); border: 1px solid #222d34; }
+                h2 { color: #00a884; margin-bottom: 8px; font-size: 24px; }
+                p { font-size: 14px; color: #8696a0; margin-bottom: 20px; }
+                input { width: 90%; padding: 12px; margin-bottom: 15px; border: 1px solid #2a3942; border-radius: 8px; text-align: center; font-size: 16px; background: #202c33; color: white; outline: none; }
+                button { background: #00a884; color: #111b21; border: none; padding: 12px; border-radius: 8px; cursor: pointer; font-size: 16px; width: 98%; font-weight: bold; transition: 0.3s; }
+                button:hover { background: #008f6f; }
+                .code { font-size: 26px; font-weight: bold; color: #00a884; letter-spacing: 4px; margin-top: 20px; word-break: break-all; }
+                .badge { display: inline-block; background: #202c33; color: #00a884; padding: 4px 10px; border-radius: 12px; font-size: 12px; margin-bottom: 15px; }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h2>${BOT_NAME}</h2>
+                <div class="badge">Loaded Plugins: ${commands.size}</div>
+                <p>Enter phone number with Country Code<br>(e.g. 94771234567)</p>
+                <input type="text" id="phone" placeholder="9477XXXXXXX">
+                <button onclick="getPair()">Get Pairing Code</button>
+                <div class="code" id="result"></div>
+            </div>
+
+            <script>
+                async function getPair() {
+                    const number = document.getElementById('phone').value.trim();
+                    const result = document.getElementById('result');
+                    if (!number) return alert('Enter a valid phone number!');
+                    
+                    result.style.color = "#00a884";
+                    result.innerText = "Generating Code...";
+                    try {
+                        const res = await fetch('/pair?num=' + number);
+                        const data = await res.json();
+                        if (data.code) {
+                            result.innerText = data.code;
+                        } else {
+                            result.style.color = "#ea4335";
+                            result.innerText = data.error || "Error!";
+                        }
+                    } catch (e) {
+                        result.style.color = "#ea4335";
+                        result.innerText = "Failed to connect!";
+                    }
+                }
+            </script>
+        </body>
+        </html>
+    `);
 });
 
 app.get('/pair', async (req, res) => {
