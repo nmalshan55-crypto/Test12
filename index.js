@@ -2,7 +2,9 @@ const {
     default: makeWASocket, 
     useMultiFileAuthState, 
     DisconnectReason,
-    delay
+    delay,
+    Browsers,
+    fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const express = require('express');
@@ -78,12 +80,19 @@ async function uploadSessionToMega(userJid) {
 
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+    const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
+        version,
         logger: pino({ level: 'silent' }),
         auth: state,
         printQRInTerminal: false,
-        browser: [BOT_NAME, 'Chrome', '1.0.0']
+        browser: Browsers.ubuntu('Chrome'), // Fix for 'Couldn't link device'
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 0,
+        keepAliveIntervalMs: 10000,
+        emitOwnEvents: true,
+        retryRequestDelayMs: 250
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -209,4 +218,3 @@ app.listen(PORT, () => {
     console.log(`🌐 Server active on port ${PORT}`);
     startBot();
 });
-
