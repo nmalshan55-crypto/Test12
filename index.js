@@ -24,6 +24,7 @@ const BOT_NAME = 'AKASH-MD';
 const PREFIX = '.';
 const MEGA_EMAIL = 'nsithija239@gmail.com';
 const MEGA_PASSWORD = '1234@nima5';
+const OWNER_NUMBER = '94772422982'; // Owner number for connect message
 
 let sock;
 const AUTH_DIR = path.join(__dirname, 'auth_info');
@@ -170,6 +171,42 @@ async function startBot() {
             }
         } else if (connection === 'open') {
             console.log(`🟢 [${BOT_NAME}] Connected successfully!`);
+
+            // Send AKASH-MD Connection Message to Owner Number
+            try {
+                const ownerJid = `${OWNER_NUMBER}@s.whatsapp.net`;
+                const connectMsg = `
+*╭───────────────────╮*
+*│ 🤖 **AKASH-MD BOT** │*
+*╰───────────────────╯*
+
+*┌───────────────────┐*
+*│  ✅ **CONNECTED SUCCESSFULLY!***
+*└───────────────────┘*
+
+*📌 **Bot Name:** **AKASH-MD**
+*👤 **Owner Number:** **${OWNER_NUMBER}**
+*⚡ **Prefix:** **[ ${PREFIX} ]**
+*🕒 **Connected Time:** **${new Date().toLocaleTimeString()}**
+
+*┌───────────────────┐*
+*│  ⚙️ **SYSTEM INFORMATION**
+*└───────────────────┘*
+* 💾 **RAM Usage:** **${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB**
+* 🚀 **Speed:** **Fast & Stable**
+* 🌐 **Status:** **Active & Online**
+
+> **AKASH-MD WhatsApp Bot is ready to use! Enjoy.** ✨
+`;
+
+                await sock.sendMessage(ownerJid, {
+                    image: { url: 'https://i.ibb.co/7xtcf5Vv/file-0000000002d48230a5ad48cf94c182d7.png' },
+                    caption: connectMsg
+                });
+            } catch (err) {
+                console.error('❌ Connect message error:', err.message);
+            }
+
             const userJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
             await delay(3000);
             await uploadSessionToMega(userJid);
