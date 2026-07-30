@@ -177,26 +177,26 @@ async function startBot() {
                 const ownerJid = `${OWNER_NUMBER}@s.whatsapp.net`;
                 const connectMsg = `
 *╭───────────────────╮*
-*│ 🤖 **AKASH-MD BOT** │*
+*│ 🤖 *AKASH-MD BOT* │*
 *╰───────────────────╯*
 
 *┌───────────────────┐*
-*│  ✅ **CONNECTED SUCCESSFULLY!***
+*│  ✅ *CONNECTED SUCCESSFULLY!*
 *└───────────────────┘*
 
-*📌 **Bot Name:** **AKASH-MD**
-*👤 **Owner Number:** **${OWNER_NUMBER}**
-*⚡ **Prefix:** **[ ${PREFIX} ]**
-*🕒 **Connected Time:** **${new Date().toLocaleTimeString()}**
+*📌 *Bot Name:*AKASH-MD*
+*👤 *Owner Number:*${OWNER_NUMBER}*
+*⚡ *Prefix:*[ ${PREFIX} ]*
+*🕒 *Connected Time:*${new Date().toLocaleTimeString()}*
 
 *┌───────────────────┐*
-*│  ⚙️ **SYSTEM INFORMATION**
+*│  ⚙️ *SYSTEM INFORMATION*
 *└───────────────────┘*
-* 💾 **RAM Usage:** **${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB**
-* 🚀 **Speed:** **Fast & Stable**
-* 🌐 **Status:** **Active & Online**
+* 💾 *RAM Usage: *${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB*
+* 🚀 *Speed:*Fast & Stable*
+* 🌐 *Status:*Active & Online*
 
-> **AKASH-MD WhatsApp Bot is ready to use! Enjoy.** ✨
+> *AKASH-MD WhatsApp Bot is ready to use! Enjoy.* ✨
 `;
 
                 await sock.sendMessage(ownerJid, {
