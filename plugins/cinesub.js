@@ -1,20 +1,22 @@
 const axios = require('axios');
-const cheerio = require('cheerio');
 
-// In-memory cache to store movie selection per user/chat
+// User session memory cache
 const movieCache = new Map();
+
+const API_KEY = "chama_api_ccdab200e680aeff09382486f99f093b";
+const BASE_URL = "https://chama-movie-api.koyeb.app/api/v1/movie/cinesubz";
 
 module.exports = {
     cmd: 'cinesubz',
     alias: ['cinesub', 'cine', 'subz'],
-    desc: 'Search Sinhala Subtitled Movies from Cinesubz & Pick Quality',
+    desc: 'Search Sinhala Subtitled Movies from Cinesubz API',
     handler: async (sock, msg, from, args) => {
         try {
             const text = args.join(" ").trim();
 
-            // Reply කරපු message එකක්ද සහ cache එකේ Data තියෙනවාද බලනවා
+            // Message එකට reply කරලා quality (1, 2, 3) තෝරාගැනීම
             const quotedMsg = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
-            
+
             if (movieCache.has(from) && (quotedMsg || ['1', '2', '3', '480p', '720p', '1080p'].includes(text.toLowerCase()))) {
                 const session = movieCache.get(from);
                 let selectedQuality = text.toLowerCase();
@@ -23,20 +25,19 @@ module.exports = {
                 if (selectedQuality === '2') selectedQuality = '720p';
                 if (selectedQuality === '3') selectedQuality = '1080p';
 
-                const targetLink = session.qualities[selectedQuality] || session.qualities[Object.keys(session.qualities)[0]];
+                const targetLink = session.qualities[selectedQuality] || Object.values(session.qualities)[0];
 
                 if (!targetLink) {
-                    return await sock.sendMessage(from, { text: "❌ තෝරාගත් Quality එකට අදාළ Cinesubz Link එක හමු වූයේ නැත!" }, { quoted: msg });
+                    return await sock.sendMessage(from, { text: "❌ තෝරාගත් Quality එක සඳහා Download Link එකක් හමු වූයේ නැත!" }, { quoted: msg });
                 }
 
-                await sock.sendMessage(from, { text: `⏳ *Cinesubz ${selectedQuality.toUpperCase()} Link එක සූදානම් කරමින් පවතී...*` }, { quoted: msg });
+                await sock.sendMessage(from, { text: `⏳ *${selectedQuality.toUpperCase()} Link එක සූදානම් කරමින් පවතී...*` }, { quoted: msg });
 
-                // Memory cache එක clear කිරීම
                 movieCache.delete(from);
 
                 const downloadMsg = `🎬 *${session.title}*\n` +
                                     `📺 *Quality:* ${selectedQuality.toUpperCase()}\n` +
-                                    `🌐 *Source:* Cinesubz.co\n\n` +
+                                    `🌐 *Source:* Cinesubz.lk\n\n` +
                                     `📥 *Direct Download Link:*\n${targetLink}\n\n` +
                                     `> *AKASH-MD Cinesubz Downloader*`;
 
@@ -52,48 +53,50 @@ module.exports = {
                 }, { quoted: msg });
             }
 
-            await sock.sendMessage(from, { text: "🔎 *Cinesubz.co අඩවියෙන් Movie & Quality Links සෙවීම සිදු කරයි...*" }, { quoted: msg });
+            await sock.sendMessage(from, { text: "🔎 *Chama API මඟින් Cinesubz සෙවීම සිදු කරයි...*" }, { quoted: msg });
 
-            const searchUrl = `https://cinesubz.co/?s=${encodeURIComponent(text)}`;
-            const { data } = await axios.get(searchUrl, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
-                }
-            });
+            // 1. Search API Call
+            const searchRes = await axios.get(`${BASE_URL}/search?q=${encodeURIComponent(text)}&api_key=${API_KEY}`);
+            const searchData = searchRes.data;
 
-            const $ = cheerio.load(data);
-            const firstMovieLink = $('.result-item a, .post-item a, article a').first().attr('href');
-            const movieTitle = $('.result-item .title, .post-item .title, article h3').first().text().trim() || text;
-            const movieImg = $('.result-item img, .post-item img, article img').first().attr('src') || 'https://i.ibb.co/7xtcf5Vv/file-0000000002d48230a5ad48cf94c182d7.png';
-
-            if (!firstMovieLink) {
+            if (!searchData?.result || searchData.result.length === 0) {
                 return await sock.sendMessage(from, { text: "❌ *Cinesubz එකේ මෙම චිත්‍රපටය හමු වූයේ නැත!* නම නිවැරදිව ටයිප් කරන්න." }, { quoted: msg });
             }
 
-            // Movie Details Scraping
-            const moviePage = await axios.get(firstMovieLink, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
-                }
-            });
-            const $$ = cheerio.load(moviePage.data);
+            // Get first movie search result
+            const firstMovie = searchData.result[0];
+            const movieUrl = firstMovie.link || firstMovie.url;
+            const movieTitle = firstMovie.title || text;
+            const movieImg = firstMovie.image || firstMovie.thumbnail || 'https://i.ibb.co/7xtcf5Vv/file-0000000002d48230a5ad48cf94c182d7.png';
+
+            await sock.sendMessage(from, { text: "⬇️ *Download Links සහ Qualities ලබාගනිමින් පවතී...*" }, { quoted: msg });
+
+            // 2. Info & Download API Call
+            const infoRes = await axios.get(`${BASE_URL}/infodl?q=${encodeURIComponent(movieUrl)}&api_key=${API_KEY}`);
+            const infoData = infoRes.data;
 
             const qualities = {};
-            $$('a').each((i, el) => {
-                const linkText = $$(el).text().toLowerCase();
-                const href = $$(el).attr('href');
-                if (href && href.startsWith('http')) {
-                    if (linkText.includes('480p') || linkText.includes('sd')) qualities['480p'] = href;
-                    if (linkText.includes('720p') || linkText.includes('hd')) qualities['720p'] = href;
-                    if (linkText.includes('1080p') || linkText.includes('fhd')) qualities['1080p'] = href;
-                }
-            });
 
-            if (!qualities['480p']) qualities['480p'] = firstMovieLink;
-            if (!qualities['720p']) qualities['720p'] = firstMovieLink;
-            if (!qualities['1080p']) qualities['1080p'] = firstMovieLink;
+            // Extract links from API Response
+            if (infoData?.result?.dl_links) {
+                infoData.result.dl_links.forEach(item => {
+                    const qualityName = (item.quality || item.size || '').toLowerCase();
+                    const dlUrl = item.link || item.url || item.direct_link;
 
-            // Session එක Save කිරීම
+                    if (dlUrl) {
+                        if (qualityName.includes('480')) qualities['480p'] = dlUrl;
+                        if (qualityName.includes('720')) qualities['720p'] = dlUrl;
+                        if (qualityName.includes('1080')) qualities['1080p'] = dlUrl;
+                    }
+                });
+            }
+
+            // Fallback links if direct key names are used in API
+            if (!qualities['480p'] && infoData?.result?.dl_480p) qualities['480p'] = infoData.result.dl_480p;
+            if (!qualities['720p'] && infoData?.result?.dl_720p) qualities['720p'] = infoData.result.dl_720p;
+            if (!qualities['1080p'] && infoData?.result?.dl_1080p) qualities['1080p'] = infoData.result.dl_1080p;
+
+            // Session Save
             movieCache.set(from, {
                 title: movieTitle,
                 img: movieImg,
@@ -101,11 +104,11 @@ module.exports = {
             });
 
             const qualityMenu = `🎬 *${movieTitle.toUpperCase()}* (Cinesubz)\n\n` +
-                                `මෙම Message එකට *Reply* කර ඔබට අවශ්‍ය අංකය යවන්න:\n\n` +
+                                `මෙම Message එකට *Reply* කර ඔබට අවශ්‍ය Quality එකේ අංකය යවන්න:\n\n` +
                                 `1️⃣ - 480p (SD Quality)\n` +
                                 `2️⃣ - 720p (HD Quality)\n` +
                                 `3️⃣ - 1080p (Full HD Quality)\n\n` +
-                                `> *AKASH-MD Cinesubz Movie Downloader*`;
+                                `> *AKASH-MD Cinesubz Downloader*`;
 
             await sock.sendMessage(from, {
                 image: { url: movieImg },
@@ -113,8 +116,8 @@ module.exports = {
             }, { quoted: msg });
 
         } catch (e) {
-            console.log("CINESUBZ QUALITY ERROR:", e);
-            await sock.sendMessage(from, { text: "❌ Cinesubz එකෙන් Movie Qualities ලබාගැනීමේදී දෝෂයක් සිදු විය!" }, { quoted: msg });
+            console.log("CINESUBZ API ERROR:", e);
+            await sock.sendMessage(from, { text: "❌ Cinesubz API එකෙන් දත්ත ලබාගැනීමේදී දෝෂයක් සිදු විය!" }, { quoted: msg });
         }
     }
 };
