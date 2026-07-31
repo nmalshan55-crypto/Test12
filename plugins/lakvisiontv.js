@@ -6,11 +6,40 @@ const SEARCH_API = "https://chama-movie-api.koyeb.app/api/v1/movie/lakvision/sea
 const INFODL_API = "https://chama-movie-api.koyeb.app/api/v1/movie/lakvision/infodl";
 
 // Custom Footer Config
-const DEFAULT_FOOTER = "> *✦ ᴘᴏᴡᴇʀᴇᴅ ʙʏ 𝙰𝙺𝙰𝚂𝙷 ✦*";
+const DEFAULT_FOOTER = "> *✦ ᴘᴏᴡᴇʀᴇᴅ ʙʏ 𝙰𝙺𝙰𝚂🇭 ✦*";
 
 // Memory storage for user reply sessions
 const pendingSearch = new Map();
 const pendingQuality = new Map();
+
+// Helper to safely parse links array from API response
+function extractDownloadLinks(data) {
+  if (!data) return [];
+  
+  // 1. Direct array checks
+  let links = data.download_links || data.dl_links || data.links || data.downloadLinks || data.servers || data.episodes || [];
+  
+  if (Array.isArray(links) && links.length > 0) {
+    return links.map(item => {
+      if (typeof item === 'string') {
+        return { quality: "Standard HD / Direct Stream", link: item };
+      }
+      return {
+        quality: item.quality || item.title || item.name || item.server || item.resolution || "Direct Video Stream",
+        link: item.link || item.url || item.download_url || item.href || item.src,
+        size: item.size || ""
+      };
+    }).filter(item => item.link);
+  }
+
+  // 2. Single direct link properties check
+  const singleUrl = data.direct_link || data.download_url || data.stream_url || data.proxy_url || data.video_url || data.url || data.link;
+  if (singleUrl && typeof singleUrl === 'string' && singleUrl.startsWith("http")) {
+    return [{ quality: "Direct Download / Stream", link: singleUrl, size: "" }];
+  }
+
+  return [];
+}
 
 module.exports = {
   cmd: "lakvision",
@@ -24,7 +53,7 @@ module.exports = {
 
     if (!query) {
       return sock.sendMessage(from, {
-        text: `🎬 *LAKVISION MOVIE & SERIES SEARCH*\n\nUsage: \`.lak <movie_name>\`\nExample: \`.lak Aladdin\`\n\n${DEFAULT_FOOTER}`
+        text: `🎬 *LAKVISION MOVIE & SERIES SEARCH*\n\nUsage: \`.lak <movie_name>\`\nExample: \`.lak Kinduru Kumariyo\`\n\n${DEFAULT_FOOTER}`
       }, { quoted: msg });
     }
 
@@ -83,34 +112,37 @@ module.exports = {
         const selected = session.results[num - 1];
         pendingSearch.delete(sender); // Clear search session
 
-        await sock.sendMessage(from, { text: "📥 *Fetching movie details & download links...*" }, { quoted: msg });
+        await sock.sendMessage(from, { text: "📥 *Fetching details & download links...*" }, { quoted: msg });
 
         try {
           const targetUrl = selected.link || selected.url || selected.href || selected.movieUrl;
           const infoUrl = `${INFODL_API}?q=${encodeURIComponent(targetUrl)}&api_key=${API_KEY}`;
           
           const response = await axios.get(infoUrl, { timeout: 20000 });
-          const movieData = response.data?.data || response.data?.result || response.data;
+          const rawData = response.data;
+          const movieData = rawData?.data || rawData?.result || rawData;
 
           if (!movieData) {
             return sock.sendMessage(from, { text: "❌ *Failed to retrieve download details for this title.*" }, { quoted: msg });
           }
 
-          const title = movieData.title || selected.title || "Movie / Series";
+          const title = movieData.title || selected.title || "Movie / Episode";
           const thumbnail = movieData.image || movieData.thumbnail || movieData.poster || selected.thumb || "";
           const description = movieData.description || movieData.desc || "N/A";
-          const dlLinks = movieData.download_links || movieData.dl_links || movieData.links || movieData.downloadLinks || [];
+          
+          // Extract links array safely using our upgraded extractor
+          const dlLinks = extractDownloadLinks(movieData);
 
           let detailsText = `🎬 *${title}*\n\n`;
-          if (description !== "N/A") {
+          if (description !== "N/A" && description.length > 5) {
             detailsText += `📝 *Description:* ${description.slice(0, 250)}...\n\n`;
           }
 
-          if (Array.isArray(dlLinks) && dlLinks.length > 0) {
+          if (dlLinks.length > 0) {
             detailsText += "📥 *AVAILABLE DOWNLOAD OPTIONS:*\n\n";
             dlLinks.forEach((d, i) => {
               const qNum = (i + 1).toString().padStart(2, "0");
-              const quality = d.quality || d.title || d.name || "Video Quality";
+              const quality = d.quality;
               const size = d.size ? ` (${d.size})` : "";
               detailsText += `*${qNum}* ❯❯ ${quality}${size}\n`;
             });
@@ -120,11 +152,9 @@ module.exports = {
             // Save state for quality reply
             pendingQuality.set(sender, { title, dlLinks, timestamp: Date.now() });
 
-          } else if (movieData.direct_link || movieData.download_url) {
-            const directUrl = movieData.direct_link || movieData.download_url;
-            detailsText += `🔗 *Direct Download Link:*\n${directUrl}\n\n${DEFAULT_FOOTER}`;
           } else {
-            detailsText += `❌ *No download options parsed for this item.*`;
+            // Fallback: If no links array was parsed, show page/watch link
+            detailsText += `⚠️ *No video stream parsed directly by API.*\n🔗 *Watch / Download Link:*\n${targetUrl}\n\n${DEFAULT_FOOTER}`;
           }
 
           if (thumbnail) {
@@ -136,7 +166,7 @@ module.exports = {
 
         } catch (err) {
           console.error("Lakvision InfoDL Error:", err.message);
-          await sock.sendMessage(from, { text: "❌ *Error fetching movie links from API.*" }, { quoted: msg });
+          await sock.sendMessage(from, { text: "❌ *Error fetching details from API.*" }, { quoted: msg });
           return true;
         }
       }
@@ -155,8 +185,8 @@ module.exports = {
         pendingQuality.delete(sender); // Clear quality session
 
         const selectedDl = dlLinks[num - 1];
-        let fileUrl = selectedDl.link || selectedDl.url || selectedDl.download_url || selectedDl.href;
-        const qualityName = selectedDl.quality || selectedDl.title || "HD";
+        let fileUrl = selectedDl.link;
+        const qualityName = selectedDl.quality || "HD";
 
         // Append API Key if missing on proxy links
         if (fileUrl && fileUrl.includes("/proxy?") && !fileUrl.includes("api_key=")) {
@@ -178,7 +208,7 @@ module.exports = {
 
         } catch (error) {
           console.error("Direct File Upload Error:", error.message);
-          // Fallback if file exceeds WhatsApp limits
+          // Fallback if file exceeds WhatsApp limits or stream fails
           await sock.sendMessage(from, { 
             text: `🎬 *${title}*\n📊 *Quality:* ${qualityName}\n\n⚠️ *Direct stream failed! Here is your Direct Download Link:*\n🔗 ${fileUrl}\n\n${DEFAULT_FOOTER}` 
           }, { quoted: msg });
