@@ -4,23 +4,23 @@ const API_KEY = "chama_api_ccdab200e680aeff09382486f99f093b";
 const SEARCH_API = "https://chama-movie-api.koyeb.app/api/v1/movie/lakvision/search";
 const INFODL_API = "https://chama-movie-api.koyeb.app/api/v1/movie/lakvision/infodl";
 
-// Memory storage for user sessions
-const pendingSearch = {};
-const pendingDownload = {};
+// User Session Memory
+const pendingSearch = new Map();
+const pendingDownload = new Map();
 
-// 1. SEARCH MOVIES FUNCTION
+// 1. SEARCH FUNCTION
 async function searchLakvision(query) {
   try {
-    const response = await axios.get(`${SEARCH_API}?q=${encodeURIComponent(query)}&api_key=${API_KEY}`);
+    const url = `${SEARCH_API}?q=${encodeURIComponent(query)}&api_key=${API_KEY}`;
+    const response = await axios.get(url, { timeout: 15000 });
     
+    // Chama API Response handling
     if (response.data && response.data.result) {
-      return response.data.result;
-    } else if (Array.isArray(response.data)) {
-      return response.data;
+      return Array.isArray(response.data.result) ? response.data.result : [];
     }
     return [];
   } catch (e) {
-    console.error("Lakvision Search Error:", e.message);
+    console.error("Lakvision Search API Error:", e.message);
     return [];
   }
 }
@@ -28,43 +28,45 @@ async function searchLakvision(query) {
 // 2. FETCH MOVIE INFO & DOWNLOAD LINKS FUNCTION
 async function getLakvisionInfoDl(movieUrl) {
   try {
-    const response = await axios.get(`${INFODL_API}?q=${encodeURIComponent(movieUrl)}&api_key=${API_KEY}`);
-    
-    if (response.data) {
-      return response.data.result || response.data;
+    const url = `${INFODL_API}?q=${encodeURIComponent(movieUrl)}&api_key=${API_KEY}`;
+    const response = await axios.get(url, { timeout: 15000 });
+
+    if (response.data && response.data.result) {
+      return response.data.result;
     }
     return null;
   } catch (e) {
-    console.error("Lakvision InfoDL Error:", e.message);
+    console.error("Lakvision InfoDL API Error:", e.message);
     return null;
   }
 }
 
-// 📦 MAIN EXPORT FOR INDEX.JS
 module.exports = {
   cmd: "lakvision",
   alias: ["lak", "lakmovie"],
-  handler: async (sock, msg, from, args, extra) => {
-    const sender = msg.key.participant || msg.key.remoteJid;
-    const textMessage = args.join(" ").trim();
+  desc: "Search and download movies via Chama Lakvision API",
 
-    // 🔍 SEARCH MOVIE
-    if (!textMessage) {
+  handler: async (sock, msg, from, args, { PREFIX }) => {
+    const sender = msg.key.participant || msg.key.remoteJid;
+    const query = args.join(" ").trim();
+
+    if (!query) {
       return sock.sendMessage(from, { 
-        text: "🎬 *Lakvisiontv Movie Search*\n\nUsage: `.lakvision <movie_name>`\nExample: `.lakvision Aladdin`" 
+        text: `🎬 *Lakvisiontv Movie Search*\n\nUsage: \`${PREFIX}lakvision <movie_name>\`\nExample: \`${PREFIX}lakvision Aladdin\`` 
       }, { quoted: msg });
     }
 
-    await sock.sendMessage(from, { text: "🔍 *Searching movies on Lakvisiontv...*" }, { quoted: msg });
-    const searchResults = await searchLakvision(textMessage);
+    await sock.sendMessage(from, { text: `🔍 *Searching movies on Chama API:* "${query}"...` }, { quoted: msg });
+    const searchResults = await searchLakvision(query);
 
-    if (!searchResults || !searchResults.length) {
+    if (!searchResults || searchResults.length === 0) {
       return sock.sendMessage(from, { text: "❌ *No movies found! Try another name.*" }, { quoted: msg });
     }
 
-    pendingSearch[sender] = { results: searchResults, timestamp: Date.now() };
+    // Save user search session
+    pendingSearch.set(sender, { results: searchResults, timestamp: Date.now() });
 
-    let text = "🎬 *Lakvisiontv Search Results:*\n\n";
+    let text = "🎬 *LAKVISIONTV SEARCH RESULTS:*\n\n";
     searchResults.slice(0, 10).forEach((m, i) => {
       const mTitle = m.title || m.name || "Movie";
       text += `*${i + 1}.* ${mTitle}\n`;
@@ -74,102 +76,100 @@ module.exports = {
     return sock.sendMessage(from, { text }, { quoted: msg });
   },
 
-  // 💡 LISTEN FOR DIRECT NUMBER REPLIES (1, 2, 3...)
+  // 💡 HANDLE DIRECT NUMBER REPLIES (1, 2, 3...)
   onText: async (sock, msg, from, body) => {
     const sender = msg.key.participant || msg.key.remoteJid;
     const textTrimmed = body ? body.trim() : "";
 
-    if (isNaN(textTrimmed) || textTrimmed === "") return;
+    if (isNaN(textTrimmed) || textTrimmed === "") return false;
     const num = parseInt(textTrimmed);
 
-    // STEP 1: Process Movie Selection from Search Results
-    if (pendingSearch[sender] && num > 0 && num <= pendingSearch[sender].results.length) {
-      await sock.sendMessage(from, { react: { text: "⏳", key: msg.key } });
+    // STEP 1: Process Movie Selection
+    if (pendingSearch.has(sender)) {
+      const session = pendingSearch.get(sender);
 
-      const selected = pendingSearch[sender].results[num - 1];
-      delete pendingSearch[sender];
+      if (num > 0 && num <= session.results.length) {
+        await sock.sendMessage(from, { react: { text: "⏳", key: msg.key } });
 
-      await sock.sendMessage(from, { text: "📥 *Fetching movie details & download links...*" }, { quoted: msg });
-      
-      const targetUrl = selected.link || selected.url || selected.movieUrl || selected.href;
-      const movieData = await getLakvisionInfoDl(targetUrl);
+        const selected = session.results[num - 1];
+        pendingSearch.delete(sender); // Clear search session
 
-      if (!movieData) {
-        return sock.sendMessage(from, { text: "❌ *Failed to fetch download links!*" }, { quoted: msg });
+        await sock.sendMessage(from, { text: "📥 *Fetching movie details & download links...*" }, { quoted: msg });
+
+        const targetUrl = selected.link || selected.url || selected.href;
+        const movieData = await getLakvisionInfoDl(targetUrl);
+
+        if (!movieData) {
+          return sock.sendMessage(from, { text: "❌ *Failed to fetch download links!*" }, { quoted: msg });
+        }
+
+        const title = movieData.title || selected.title || "Movie Details";
+        const image = movieData.image || movieData.thumbnail || selected.image || "";
+        const desc = movieData.description || "N/A";
+        const dlLinks = movieData.download_links || movieData.dl_links || movieData.links || [];
+
+        let resMsg = `🎬 *${title}*\n\n`;
+        if (desc !== "N/A") resMsg += `📝 *Description:* ${desc}\n\n`;
+
+        if (Array.isArray(dlLinks) && dlLinks.length > 0) {
+          resMsg += "📥 *Available Download Options:*\n";
+          dlLinks.forEach((d, i) => {
+            const quality = d.quality || d.title || `Option ${i + 1}`;
+            const size = d.size ? ` (${d.size})` : "";
+            resMsg += `*${i + 1}.* ${quality}${size}\n`;
+          });
+          resMsg += "\n💡 *Reply with the Quality number (e.g. 1) to download.*";
+
+          pendingDownload.set(sender, { title, dlLinks, timestamp: Date.now() });
+        } else if (movieData.direct_link || movieData.download_url) {
+          const directUrl = movieData.direct_link || movieData.download_url;
+          resMsg += `🔗 *Direct Download Link:*\n${directUrl}`;
+        } else {
+          resMsg += "❌ *No download links found for this movie.*";
+        }
+
+        if (image) {
+          await sock.sendMessage(from, { image: { url: image }, caption: resMsg }, { quoted: msg });
+        } else {
+          await sock.sendMessage(from, { text: resMsg }, { quoted: msg });
+        }
+        return true;
       }
-
-      const title = movieData.title || selected.title || "Movie Details";
-      const image = movieData.image || movieData.thumbnail || selected.image || selected.thumb || "";
-      const desc = movieData.description || movieData.desc || "N/A";
-      const dlLinks = movieData.dl_links || movieData.download_links || movieData.links || [];
-
-      let resMsg = `🎬 *${title}*\n\n`;
-      if (desc !== "N/A") resMsg += `📝 *Description:* ${desc}\n\n`;
-
-      if (dlLinks && dlLinks.length > 0) {
-        resMsg += "📥 *Available Download Options:*\n";
-        dlLinks.forEach((d, i) => {
-          const quality = d.quality || d.title || `Option ${i + 1}`;
-          const size = d.size ? ` (${d.size})` : "";
-          resMsg += `*${i + 1}.* ${quality}${size}\n`;
-        });
-        resMsg += "\n💡 *Reply with the Quality number (e.g. 1) to download.*";
-
-        pendingDownload[sender] = { title, dlLinks, timestamp: Date.now() };
-      } else if (movieData.direct_link || movieData.download_url) {
-        const directUrl = movieData.direct_link || movieData.download_url;
-        resMsg += `🔗 *Direct Download Link:*\n${directUrl}`;
-      } else {
-        resMsg += "❌ *No download links found for this movie.*";
-      }
-
-      if (image) {
-        await sock.sendMessage(from, { image: { url: image }, caption: resMsg }, { quoted: msg });
-      } else {
-        await sock.sendMessage(from, { text: resMsg }, { quoted: msg });
-      }
-      return true;
     }
 
-    // STEP 2: Process Download Selection & Send File/Link
-    if (pendingDownload[sender] && num > 0 && num <= pendingDownload[sender].dlLinks.length) {
-      await sock.sendMessage(from, { react: { text: "⬇️", key: msg.key } });
+    // STEP 2: Process Quality Selection & Download
+    if (pendingDownload.has(sender)) {
+      const session = pendingDownload.get(sender);
 
-      const { title, dlLinks } = pendingDownload[sender];
-      delete pendingDownload[sender];
+      if (num > 0 && num <= session.dlLinks.length) {
+        await sock.sendMessage(from, { react: { text: "⬇️", key: msg.key } });
 
-      const selectedDl = dlLinks[num - 1];
-      const fileUrl = selectedDl.link || selectedDl.url || selectedDl.download_url;
-      const qualityName = selectedDl.quality || selectedDl.title || "Video";
+        const { title, dlLinks } = session.dlLinks;
+        pendingDownload.delete(sender); // Clear download session
 
-      await sock.sendMessage(from, { text: `⬇️ *Processing your download (${qualityName})...*\n*Please wait a moment.*` }, { quoted: msg });
+        const selectedDl = session.dlLinks[num - 1];
+        const fileUrl = selectedDl.link || selectedDl.url || selectedDl.download_url;
+        const qualityName = selectedDl.quality || selectedDl.title || "Video";
 
-      try {
-        await sock.sendMessage(from, {
-          document: { url: fileUrl },
-          mimetype: "video/mp4",
-          fileName: `${title} - ${qualityName}.mp4`.replace(/[^\w\s.-]/gi, ''),
-          caption: `🎬 *${title}*\n📊 *Quality:* ${qualityName}\n\n> **Lakvision Movie Downloader** ✨`
-        }, { quoted: msg });
+        await sock.sendMessage(from, { text: `⬇️ *Processing download (${qualityName})...*\n*Please wait...*` }, { quoted: msg });
 
-      } catch (error) {
-        console.error("Document Send Error:", error.message);
-        await sock.sendMessage(from, {
-          text: `🎬 *${title}*\n📊 *Quality:* ${qualityName}\n\n🔗 *Download Link:*\n${fileUrl}`
-        }, { quoted: msg });
+        try {
+          await sock.sendMessage(from, {
+            document: { url: fileUrl },
+            mimetype: "video/mp4",
+            fileName: `${session.title} - ${qualityName}.mp4`.replace(/[^\w\s.-]/gi, ''),
+            caption: `🎬 *${session.title}*\n📊 *Quality:* ${qualityName}\n\n> **Lakvision Downloader** ✨`
+          }, { quoted: msg });
+        } catch (error) {
+          console.error("Document Send Error:", error.message);
+          await sock.sendMessage(from, {
+            text: `🎬 *${session.title}*\n📊 *Quality:* ${qualityName}\n\n🔗 *Download Link:*\n${fileUrl}`
+          }, { quoted: msg });
+        }
+        return true;
       }
-      return true;
     }
 
     return false;
   }
 };
-
-// CLEANUP TIMEOUT (Clear memory every 10 mins)
-setInterval(() => {
-  const now = Date.now();
-  const timeout = 10 * 60 * 1000;
-  for (const s in pendingSearch) if (now - pendingSearch[s].timestamp > timeout) delete pendingSearch[s];
-  for (const s in pendingDownload) if (now - pendingDownload[s].timestamp > timeout) delete pendingDownload[s];
-}, 5 * 60 * 1000);
-
