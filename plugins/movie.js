@@ -1,4 +1,3 @@
-const { cmd } = require("../command");
 const axios = require("axios");
 const cheerio = require("cheerio");
 
@@ -71,7 +70,6 @@ async function getMovieInfoAndLinks(url) {
 
     const $ = cheerio.load(data);
 
-    // Metadata
     const title = $(".info-details .details-title h3").text().trim() || "Movie";
     const duration = $(".info-details .data-views[itemprop='duration']").text().trim() || "N/A";
     const imdb = $(".info-details .data-imdb").text().replace("IMDb:", "").trim() || "N/A";
@@ -87,7 +85,6 @@ async function getMovieInfoAndLinks(url) {
 
     const genres = $(".details-genre a").map((_, a) => $(a).text().trim()).get();
 
-    // Download Links
     const downloadLinks = [];
     $(".link-pixeldrain tbody tr").each((_, row) => {
       const pageLink = $(row).find(".link-opt a").attr("href") || "";
@@ -113,115 +110,106 @@ async function getMovieInfoAndLinks(url) {
   }
 }
 
-// 3. COMMAND: MOVIE SEARCH
-cmd({
-  pattern: "movie",
-  alias: ["sinhalasub", "films", "cinema"],
-  react: "🎬",
-  desc: "Search and send movies from Sinhalasub.lk",
-  category: "download",
-  filename: __filename
-}, async (danuwa, mek, m, { from, q, sender, reply }) => {
-  if (!q) return reply("🎬 *Movie Search Plugin*\n\nUsage: `.movie <movie_name>`\nExample: `.movie Avengers`");
+// 📦 MAIN EXPORT FOR INDEX.JS
+module.exports = {
+  cmd: "movie",
+  handler: async (sock, msg, from, args, extra) => {
+    const sender = msg.key.participant || msg.key.remoteJid;
+    const textMessage = args.join(" ").trim();
 
-  reply("🔍 *Searching for movies on Sinhalasub...*");
-  const searchResults = await searchMovies(q);
+    // 💡 IF USER REPLIED WITH A NUMBER (1, 2, 3...)
+    if (!isNaN(textMessage) && textMessage !== "") {
+      const num = parseInt(textMessage);
 
-  if (!searchResults.length) return reply("❌ *No movies found! Try another name.*");
+      // STEP 1: Process Movie Choice
+      if (pendingSearch[sender] && num > 0 && num <= pendingSearch[sender].results.length) {
+        await sock.sendMessage(from, { react: { text: "⏳", key: msg.key } });
 
-  pendingSearch[sender] = { results: searchResults, timestamp: Date.now() };
+        const selected = pendingSearch[sender].results[num - 1];
+        delete pendingSearch[sender];
 
-  let text = "🎬 *Sinhalasub Movie Results:*\n\n";
-  searchResults.forEach((m, i) => {
-    text += `*${i + 1}.* ${m.title}\n   🌐 *Lang:* ${m.language || 'N/A'} | 📊 *Quality:* ${m.quality || 'N/A'}\n\n`;
-  });
+        await sock.sendMessage(from, { text: "📥 *Fetching movie details and links...*" }, { quoted: msg });
+        const movieData = await getMovieInfoAndLinks(selected.movieUrl);
 
-  text += "💡 *Reply with the movie number (1-" + searchResults.length + ") to select.*";
-  return reply(text);
-});
+        if (!movieData || !movieData.downloadLinks.length) {
+          return sock.sendMessage(from, { text: "❌ *Failed to fetch download links or no Pixeldrain links found.*" }, { quoted: msg });
+        }
 
-// 4. LISTEN FOR NUMBER SELECTION (General Event Listener)
-cmd({
-  on: "text"
-}, async (danuwa, mek, m, { body, sender, reply, from }) => {
-  if (!body || isNaN(body.trim())) return;
-  const num = parseInt(body.trim());
+        const { metadata, downloadLinks } = movieData;
 
-  // STEP 1: Process Movie Choice
-  if (pendingSearch[sender] && num > 0 && num <= pendingSearch[sender].results.length) {
-    await danuwa.sendMessage(from, { react: { text: "⏳", key: m.key } });
+        let resMsg = `🎬 *${metadata.title}*\n\n`;
+        resMsg += `🌐 *Language:* ${metadata.language}\n`;
+        resMsg += `⏱️ *Duration:* ${metadata.duration}\n`;
+        resMsg += `⭐ *IMDb:* ${metadata.imdb}\n`;
+        resMsg += `🎭 *Genres:* ${metadata.genres.join(", ")}\n`;
+        resMsg += `🎬 *Directors:* ${metadata.directors.join(", ")}\n`;
+        resMsg += `🌟 *Stars:* ${metadata.stars.slice(0, 5).join(", ")}\n\n`;
 
-    const selected = pendingSearch[sender].results[num - 1];
-    delete pendingSearch[sender];
+        resMsg += "📥 *Available Qualities:*\n";
+        downloadLinks.forEach((d, i) => {
+          resMsg += `*${i + 1}.* ${d.quality} - ${d.size}\n`;
+        });
 
-    reply("📥 *Fetching movie details and links...*");
-    const movieData = await getMovieInfoAndLinks(selected.movieUrl);
+        resMsg += "\n💡 *Reply with `.movie <number>` to get the document file.*";
 
-    if (!movieData || !movieData.downloadLinks.length) {
-      return reply("❌ *Failed to fetch download links or no Pixeldrain links found.*");
+        pendingQuality[sender] = { metadata, downloadLinks, timestamp: Date.now() };
+
+        if (metadata.thumbnail) {
+          await sock.sendMessage(from, { image: { url: metadata.thumbnail }, caption: resMsg }, { quoted: msg });
+        } else {
+          await sock.sendMessage(from, { text: resMsg }, { quoted: msg });
+        }
+        return;
+      }
+
+      // STEP 2: Process Quality Choice & Send Document
+      if (pendingQuality[sender] && num > 0 && num <= pendingQuality[sender].downloadLinks.length) {
+        await sock.sendMessage(from, { react: { text: "⬇️", key: msg.key } });
+
+        const { metadata, downloadLinks } = pendingQuality[sender];
+        delete pendingQuality[sender];
+
+        const selectedLink = downloadLinks[num - 1];
+        await sock.sendMessage(from, { text: `⬇️ *Sending ${selectedLink.quality} (${selectedLink.size}) movie...*\n*Please wait a few moments.*` }, { quoted: msg });
+
+        try {
+          const directUrl = getDirectPixeldrainUrl(selectedLink.pageLink);
+
+          await sock.sendMessage(from, {
+            document: { url: directUrl },
+            mimetype: "video/mp4",
+            fileName: `${metadata.title} - ${selectedLink.quality}.mp4`.replace(/[^\w\s.-]/gi, ''),
+            caption: `🎬 *${metadata.title}*\n📊 *Quality:* ${selectedLink.quality}\n💾 *Size:* ${selectedLink.size}\n\n> **AKASH-MD Movie Downloader** ✨`
+          }, { quoted: msg });
+
+        } catch (error) {
+          console.error("Document Send Error:", error);
+          await sock.sendMessage(from, { text: `❌ *Failed to send document file:* ${error.message}` }, { quoted: msg });
+        }
+        return;
+      }
     }
 
-    const { metadata, downloadLinks } = movieData;
+    // 🔍 SEARCH MOVIE
+    if (!textMessage) {
+      return sock.sendMessage(from, { text: "🎬 *Movie Search Plugin*\n\nUsage: `.movie <movie_name>`\nExample: `.movie Avengers`" }, { quoted: msg });
+    }
 
-    let msg = `🎬 *${metadata.title}*\n\n`;
-    msg += `🌐 *Language:* ${metadata.language}\n`;
-    msg += `⏱️ *Duration:* ${metadata.duration}\n`;
-    msg += `⭐ *IMDb:* ${metadata.imdb}\n`;
-    msg += `🎭 *Genres:* ${metadata.genres.join(", ")}\n`;
-    msg += `🎬 *Directors:* ${metadata.directors.join(", ")}\n`;
-    msg += `🌟 *Stars:* ${metadata.stars.slice(0, 5).join(", ")}\n\n`;
+    await sock.sendMessage(from, { text: "🔍 *Searching for movies on Sinhalasub...*" }, { quoted: msg });
+    const searchResults = await searchMovies(textMessage);
 
-    msg += "📥 *Available Qualities:*\n";
-    downloadLinks.forEach((d, i) => {
-      msg += `*${i + 1}.* ${d.quality} - ${d.size}\n`;
+    if (!searchResults.length) {
+      return sock.sendMessage(from, { text: "❌ *No movies found! Try another name.*" }, { quoted: msg });
+    }
+
+    pendingSearch[sender] = { results: searchResults, timestamp: Date.now() };
+
+    let text = "🎬 *Sinhalasub Movie Results:*\n\n";
+    searchResults.forEach((m, i) => {
+      text += `*${i + 1}.* ${m.title}\n   🌐 *Lang:* ${m.language || 'N/A'} | 📊 *Quality:* ${m.quality || 'N/A'}\n\n`;
     });
 
-    msg += "\n💡 *Reply with the Quality number to get the document file.*";
-
-    pendingQuality[sender] = { metadata, downloadLinks, timestamp: Date.now() };
-
-    if (metadata.thumbnail) {
-      await danuwa.sendMessage(from, { image: { url: metadata.thumbnail }, caption: msg }, { quoted: mek });
-    } else {
-      await danuwa.sendMessage(from, { text: msg }, { quoted: mek });
-    }
-    return;
+    text += "💡 *Reply with `.movie <number>` (e.g. `.movie 1`) to select.*";
+    return sock.sendMessage(from, { text }, { quoted: msg });
   }
-
-  // STEP 2: Process Quality Choice & Send Document
-  if (pendingQuality[sender] && num > 0 && num <= pendingQuality[sender].downloadLinks.length) {
-    await danuwa.sendMessage(from, { react: { text: "⬇️", key: m.key } });
-
-    const { metadata, downloadLinks } = pendingQuality[sender];
-    delete pendingQuality[sender];
-
-    const selectedLink = downloadLinks[num - 1];
-    reply(`⬇️ *Sending ${selectedLink.quality} (${selectedLink.size}) movie...*\n*Please wait a few moments.*`);
-
-    try {
-      const directUrl = getDirectPixeldrainUrl(selectedLink.pageLink);
-
-      await danuwa.sendMessage(from, {
-        document: { url: directUrl },
-        mimetype: "video/mp4",
-        fileName: `${metadata.title} - ${selectedLink.quality}.mp4`.replace(/[^\w\s.-]/gi, ''),
-        caption: `🎬 *${metadata.title}*\n📊 *Quality:* ${selectedLink.quality}\n💾 *Size:* ${selectedLink.size}\n\n> **AKASH-MD Movie Downloader** ✨`
-      }, { quoted: mek });
-
-    } catch (error) {
-      console.error("Document Send Error:", error);
-      reply(`❌ *Failed to send document file:* ${error.message}`);
-    }
-  }
-});
-
-// CLEANUP TIMEOUT (Clear memory every 5 minutes)
-setInterval(() => {
-  const now = Date.now();
-  const timeout = 10 * 60 * 1000; // 10 mins
-  for (const s in pendingSearch) if (now - pendingSearch[s].timestamp > timeout) delete pendingSearch[s];
-  for (const s in pendingQuality) if (now - pendingQuality[s].timestamp > timeout) delete pendingQuality[s];
-}, 5 * 60 * 1000);
-
-module.exports = { pendingSearch, pendingQuality };
-
+};
