@@ -184,17 +184,17 @@ async function startBot() {
 *│  ✅ *CONNECTED SUCCESSFULLY!*
 *└───────────────────┘*
 
-*📌 *Bot Name:*AKASH-MD*
-*👤 *Owner Number:*${OWNER_NUMBER}*
-*⚡ *Prefix:*[ ${PREFIX} ]*
-*🕒 *Connected Time:*${new Date().toLocaleTimeString()}*
+*📌 *Bot Name:* AKASH-MD*
+*👤 *Owner Number:* ${OWNER_NUMBER}*
+*⚡ *Prefix:* [ ${PREFIX} ]*
+*🕒 *Connected Time:* ${new Date().toLocaleTimeString()}*
 
 *┌───────────────────┐*
 *│  ⚙️ *SYSTEM INFORMATION*
 *└───────────────────┘*
-* 💾 *RAM Usage: *${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB*
-* 🚀 *Speed:*Fast & Stable*
-* 🌐 *Status:*Active & Online*
+* 💾 *RAM Usage:* ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB*
+* 🚀 *Speed:* Fast & Stable*
+* 🌐 *Status:* Active & Online*
 
 > *AKASH-MD WhatsApp Bot is ready to use! Enjoy.* ✨
 `;
@@ -213,6 +213,7 @@ async function startBot() {
         }
     });
 
+    // 📩 INCOMING MESSAGES HANDLER
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify') return;
         const msg = messages[0];
@@ -224,15 +225,45 @@ async function startBot() {
                      msg.message.imageMessage?.caption || 
                      msg.message.videoMessage?.caption || '';
 
-        if (!body || !body.startsWith(PREFIX)) return;
+        const trimmedBody = body.trim();
+        if (!trimmedBody) return;
 
-        console.log(`📩 Command: ${body} from ${from}`);
+        // -------------------------------------------------------------
+        // 1. FIRST CHECK: ONTEXT LISTENERS (FOR DIRECT REPLIES LIKE 1, 2)
+        // -------------------------------------------------------------
+        for (const [_, plugin] of commands) {
+            if (typeof plugin.onText === 'function') {
+                try {
+                    const handled = await plugin.onText(sock, msg, from, trimmedBody);
+                    if (handled) return; // Number එක අල්ලගත්තා නම් ඊළඟ Commands Check කරන්නේ නැත
+                } catch (err) {
+                    console.error(`❌ Error in onText handler:`, err.message);
+                }
+            }
+        }
 
-        const args = body.slice(PREFIX.length).trim().split(/ +/);
+        // -------------------------------------------------------------
+        // 2. SECOND CHECK: COMMAND HANDLER (e.g. .lakvision aladin)
+        // -------------------------------------------------------------
+        if (!trimmedBody.startsWith(PREFIX)) return;
+
+        console.log(`📩 Command: ${trimmedBody} from ${from}`);
+
+        const args = trimmedBody.slice(PREFIX.length).trim().split(/ +/);
         const cmdName = args.shift().toLowerCase();
 
-        const plugin = commands.get(cmdName);
-        if (plugin) {
+        // Check command or alias
+        let plugin = commands.get(cmdName);
+        if (!plugin) {
+            for (const [_, p] of commands) {
+                if (p.alias && p.alias.includes(cmdName)) {
+                    plugin = p;
+                    break;
+                }
+            }
+        }
+
+        if (plugin && typeof plugin.handler === 'function') {
             try {
                 await plugin.handler(sock, msg, from, args, { BOT_NAME, PREFIX, commands });
             } catch (err) {
