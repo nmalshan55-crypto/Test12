@@ -13,7 +13,6 @@ const fs = require('fs');
 const path = require('path');
 const { Storage } = require('megajs');
 const archiver = require('archiver');
-const fetch = require('node-fetch'); // package.json එකේ තිබුණු node-fetch
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -28,10 +27,11 @@ const MEGA_PASSWORD = '1234@nima5';
 const OWNER_NUMBER = '94772422982';
 
 let sock;
+let isStarting = false;
 const AUTH_DIR = path.join(__dirname, 'auth_info');
 const commands = new Map();
 
-// 📂 Universal Plugin Loader (Supports module.exports and cmd() formats)
+// 📂 Universal Plugin Loader
 function loadPlugins() {
     commands.clear();
     const pluginsDir = path.join(__dirname, 'plugins');
@@ -47,12 +47,10 @@ function loadPlugins() {
                 delete require.cache[require.resolve(pluginPath)];
                 const plugin = require(pluginPath);
 
-                // Format 1: module.exports = { cmd: '...', handler: ... }
                 if (plugin && plugin.cmd && typeof plugin.handler === 'function') {
                     commands.set(plugin.cmd.toLowerCase(), plugin);
                     console.log(`✅ Loaded Plugin (Format 1): ${plugin.cmd}`);
                 } 
-                // Format 2: cmd({ pattern: '...' }, handler)
                 else if (plugin && plugin.pattern && typeof plugin.function === 'function') {
                     commands.set(plugin.pattern.toLowerCase(), {
                         cmd: plugin.pattern,
@@ -154,14 +152,18 @@ async function downloadSessionFromMega() {
     }
 }
 
-// 🚀 Start Bot
+// 🚀 Main Bot Function
 async function startBot() {
+    if (isStarting) return;
+    isStarting = true;
+
     if (!fs.existsSync(AUTH_DIR) || fs.readdirSync(AUTH_DIR).length === 0) {
         await downloadSessionFromMega();
     }
 
     if (!fs.existsSync(AUTH_DIR) || fs.readdirSync(AUTH_DIR).length === 0) {
-        console.log("⚠️ No Session Found! Waiting for Pairing Code connection via Web interface...");
+        console.log("⚠️ No Session Found! Ready for Web Pairing Code...");
+        isStarting = false;
         return;
     }
 
@@ -187,15 +189,17 @@ async function startBot() {
         const { connection, lastDisconnect } = update;
 
         if (connection === 'close') {
+            isStarting = false;
             const statusCode = lastDisconnect?.error?.output?.statusCode;
-            console.log(`🔴 Connection Closed (Code: ${statusCode}). Reconnecting...`);
+            console.log(`🔴 Connection Closed (Code: ${statusCode}).`);
             if (statusCode !== DisconnectReason.loggedOut) {
                 setTimeout(startBot, 3000);
             } else {
-                console.log('❌ Session Logged Out. Please re-pair via Web UI!');
+                console.log('❌ Session Logged Out. Cleaning old auth folder...');
                 if (fs.existsSync(AUTH_DIR)) fs.rmSync(AUTH_DIR, { recursive: true, force: true });
             }
         } else if (connection === 'open') {
+            isStarting = false;
             console.log(`🟢 [${BOT_NAME}] Connected successfully!`);
 
             try {
@@ -213,13 +217,6 @@ async function startBot() {
 *👤 *Owner Number:* ${OWNER_NUMBER}*
 *⚡ *Prefix:* [ ${PREFIX} ]*
 *🕒 *Connected Time:* ${new Date().toLocaleTimeString()}*
-
-*┌───────────────────┐*
-*│  ⚙️ *SYSTEM INFORMATION*
-*└───────────────────┘*
-* 💾 *RAM Usage:* ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB*
-* 🚀 *Speed:* Fast & Stable*
-* 🌐 *Status:* Active & Online*
 
 > *AKASH-MD WhatsApp Bot is ready to use! Enjoy.* ✨
 `;
@@ -327,47 +324,47 @@ app.get('/', (req, res) => {
     `);
 });
 
-// 📱 Dedicated Pairing Handler
+// 📱 Clean Working Pairing Route
 app.get('/pair', async (req, res) => {
     let num = req.query.num;
     if (!num) return res.status(400).json({ error: 'Number required' });
     num = num.replace(/[^0-9]/g, '');
 
     try {
-        const tempAuthDir = path.join(__dirname, `temp_${num}`);
-        const { state, saveCreds } = await useMultiFileAuthState(tempAuthDir);
+        // Clear old auth_info if exists to avoid conflicts
+        if (fs.existsSync(AUTH_DIR)) {
+            fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+        }
+        fs.mkdirSync(AUTH_DIR, { recursive: true });
+
+        const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
         const { version } = await fetchLatestBaileysVersion();
 
         const pairSock = makeWASocket({
             version,
             logger: pino({ level: 'silent' }),
             auth: state,
-            browser: Browsers.ubuntu('Chrome')
+            browser: Browsers.ubuntu('Chrome'),
+            printQRInTerminal: false
         });
 
         pairSock.ev.on('creds.update', saveCreds);
 
-        if (!pairSock.authState.creds.registered) {
-            await delay(1500);
-            const code = await pairSock.requestPairingCode(num);
+        await delay(2000);
+        const code = await pairSock.requestPairingCode(num);
 
-            pairSock.ev.on('connection.update', async (update) => {
-                const { connection } = update;
-                if (connection === 'open') {
-                    if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR);
-                    fs.cpSync(tempAuthDir, AUTH_DIR, { recursive: true });
-                    fs.rmSync(tempAuthDir, { recursive: true, force: true });
+        pairSock.ev.on('connection.update', async (update) => {
+            const { connection } = update;
+            if (connection === 'open') {
+                console.log('🎉 Pairing successful! Launching Main Bot...');
+                await delay(2000);
+                startBot();
+            }
+        });
 
-                    startBot();
-                }
-            });
-
-            return res.json({ code: code?.match(/.{1,4}/g)?.join("-") || code });
-        } else {
-            return res.json({ error: 'Already registered!' });
-        }
+        return res.json({ code: code?.match(/.{1,4}/g)?.join("-") || code });
     } catch (err) {
-        console.error("Pairing Error:", err);
+        console.error("Pairing Error:", err.message);
         return res.status(500).json({ error: 'Pairing failed: ' + err.message });
     }
 });
