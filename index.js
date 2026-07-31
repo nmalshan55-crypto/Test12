@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const { Storage } = require('megajs');
 const archiver = require('archiver');
+const fetch = require('node-fetch'); // package.json එකේ තිබුණු node-fetch
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,13 +25,13 @@ const BOT_NAME = 'AKASH-MD';
 const PREFIX = '.';
 const MEGA_EMAIL = 'nsithija239@gmail.com';
 const MEGA_PASSWORD = '1234@nima5';
-const OWNER_NUMBER = '94772422982'; // Owner number for connect message
+const OWNER_NUMBER = '94772422982';
 
 let sock;
 const AUTH_DIR = path.join(__dirname, 'auth_info');
 const commands = new Map();
 
-// 📂 Load Plugins
+// 📂 Universal Plugin Loader (Supports module.exports and cmd() formats)
 function loadPlugins() {
     commands.clear();
     const pluginsDir = path.join(__dirname, 'plugins');
@@ -45,10 +46,27 @@ function loadPlugins() {
                 const pluginPath = path.join(pluginsDir, file);
                 delete require.cache[require.resolve(pluginPath)];
                 const plugin = require(pluginPath);
-                
-                if (plugin && plugin.cmd && plugin.handler) {
+
+                // Format 1: module.exports = { cmd: '...', handler: ... }
+                if (plugin && plugin.cmd && typeof plugin.handler === 'function') {
                     commands.set(plugin.cmd.toLowerCase(), plugin);
-                    console.log(`✅ Loaded Plugin: ${plugin.cmd}`);
+                    console.log(`✅ Loaded Plugin (Format 1): ${plugin.cmd}`);
+                } 
+                // Format 2: cmd({ pattern: '...' }, handler)
+                else if (plugin && plugin.pattern && typeof plugin.function === 'function') {
+                    commands.set(plugin.pattern.toLowerCase(), {
+                        cmd: plugin.pattern,
+                        handler: async (sock, msg, from, args, extra) => {
+                            await plugin.function(sock, msg, msg, {
+                                from,
+                                args,
+                                q: args.join(" "),
+                                reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
+                                ...extra
+                            });
+                        }
+                    });
+                    console.log(`✅ Loaded Plugin (Format 2): ${plugin.pattern}`);
                 }
             } catch (err) {
                 console.error(`❌ Error loading plugin ${file}:`, err.message);
@@ -59,6 +77,7 @@ function loadPlugins() {
 
 loadPlugins();
 
+// ☁️ Mega Session Backup
 async function uploadSessionToMega(userJid) {
     try {
         if (!fs.existsSync(AUTH_DIR) || fs.readdirSync(AUTH_DIR).length === 0) return;
@@ -74,7 +93,7 @@ async function uploadSessionToMega(userJid) {
 
         await new Promise((resolve) => output.on('close', resolve));
 
-        console.log('☁️ Uploading to Mega...');
+        console.log('☁️ Uploading Session to Mega...');
         const storage = await new Storage({
             email: MEGA_EMAIL,
             password: MEGA_PASSWORD
@@ -101,6 +120,7 @@ async function uploadSessionToMega(userJid) {
     }
 }
 
+// 📥 Restore Session from Mega Link
 async function downloadSessionFromMega() {
     const sessionUrl = process.env.SESSION_ID;
     if (!sessionUrl) return false;
@@ -134,9 +154,15 @@ async function downloadSessionFromMega() {
     }
 }
 
+// 🚀 Start Bot
 async function startBot() {
     if (!fs.existsSync(AUTH_DIR) || fs.readdirSync(AUTH_DIR).length === 0) {
         await downloadSessionFromMega();
+    }
+
+    if (!fs.existsSync(AUTH_DIR) || fs.readdirSync(AUTH_DIR).length === 0) {
+        console.log("⚠️ No Session Found! Waiting for Pairing Code connection via Web interface...");
+        return;
     }
 
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -166,13 +192,12 @@ async function startBot() {
             if (statusCode !== DisconnectReason.loggedOut) {
                 setTimeout(startBot, 3000);
             } else {
-                console.log('❌ Session Logged Out. Please re-pair!');
+                console.log('❌ Session Logged Out. Please re-pair via Web UI!');
                 if (fs.existsSync(AUTH_DIR)) fs.rmSync(AUTH_DIR, { recursive: true, force: true });
             }
         } else if (connection === 'open') {
             console.log(`🟢 [${BOT_NAME}] Connected successfully!`);
 
-            // Send AKASH-MD Connection Message to Owner Number
             try {
                 const ownerJid = `${OWNER_NUMBER}@s.whatsapp.net`;
                 const connectMsg = `
@@ -184,17 +209,17 @@ async function startBot() {
 *│  ✅ *CONNECTED SUCCESSFULLY!*
 *└───────────────────┘*
 
-*📌 *Bot Name:*AKASH-MD*
-*👤 *Owner Number:*${OWNER_NUMBER}*
-*⚡ *Prefix:*[ ${PREFIX} ]*
-*🕒 *Connected Time:*${new Date().toLocaleTimeString()}*
+*📌 *Bot Name:* ${BOT_NAME}*
+*👤 *Owner Number:* ${OWNER_NUMBER}*
+*⚡ *Prefix:* [ ${PREFIX} ]*
+*🕒 *Connected Time:* ${new Date().toLocaleTimeString()}*
 
 *┌───────────────────┐*
 *│  ⚙️ *SYSTEM INFORMATION*
 *└───────────────────┘*
-* 💾 *RAM Usage: *${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB*
-* 🚀 *Speed:*Fast & Stable*
-* 🌐 *Status:*Active & Online*
+* 💾 *RAM Usage:* ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB*
+* 🚀 *Speed:* Fast & Stable*
+* 🌐 *Status:* Active & Online*
 
 > *AKASH-MD WhatsApp Bot is ready to use! Enjoy.* ✨
 `;
@@ -302,21 +327,48 @@ app.get('/', (req, res) => {
     `);
 });
 
+// 📱 Dedicated Pairing Handler
 app.get('/pair', async (req, res) => {
     let num = req.query.num;
     if (!num) return res.status(400).json({ error: 'Number required' });
     num = num.replace(/[^0-9]/g, '');
 
     try {
-        if (!sock || !sock.authState.creds.registered) {
+        const tempAuthDir = path.join(__dirname, `temp_${num}`);
+        const { state, saveCreds } = await useMultiFileAuthState(tempAuthDir);
+        const { version } = await fetchLatestBaileysVersion();
+
+        const pairSock = makeWASocket({
+            version,
+            logger: pino({ level: 'silent' }),
+            auth: state,
+            browser: Browsers.ubuntu('Chrome')
+        });
+
+        pairSock.ev.on('creds.update', saveCreds);
+
+        if (!pairSock.authState.creds.registered) {
             await delay(1500);
-            const code = await sock.requestPairingCode(num);
+            const code = await pairSock.requestPairingCode(num);
+
+            pairSock.ev.on('connection.update', async (update) => {
+                const { connection } = update;
+                if (connection === 'open') {
+                    if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR);
+                    fs.cpSync(tempAuthDir, AUTH_DIR, { recursive: true });
+                    fs.rmSync(tempAuthDir, { recursive: true, force: true });
+
+                    startBot();
+                }
+            });
+
             return res.json({ code: code?.match(/.{1,4}/g)?.join("-") || code });
         } else {
-            return res.json({ error: 'Already connected!' });
+            return res.json({ error: 'Already registered!' });
         }
     } catch (err) {
-        return res.status(500).json({ error: 'Pairing failed' });
+        console.error("Pairing Error:", err);
+        return res.status(500).json({ error: 'Pairing failed: ' + err.message });
     }
 });
 
