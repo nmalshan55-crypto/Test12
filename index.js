@@ -24,14 +24,13 @@ const BOT_NAME = 'AKASH-MD';
 const PREFIX = '.';
 const MEGA_EMAIL = 'nsithija239@gmail.com';
 const MEGA_PASSWORD = '1234@nima5';
-const OWNER_NUMBER = '94772422982';
+const OWNER_NUMBER = '94772422982'; // Owner number for connect message
 
 let sock;
-let isStarting = false;
 const AUTH_DIR = path.join(__dirname, 'auth_info');
 const commands = new Map();
 
-// 📂 Universal Plugin Loader
+// 📂 Load Plugins
 function loadPlugins() {
     commands.clear();
     const pluginsDir = path.join(__dirname, 'plugins');
@@ -46,25 +45,10 @@ function loadPlugins() {
                 const pluginPath = path.join(pluginsDir, file);
                 delete require.cache[require.resolve(pluginPath)];
                 const plugin = require(pluginPath);
-
-                if (plugin && plugin.cmd && typeof plugin.handler === 'function') {
+                
+                if (plugin && plugin.cmd && plugin.handler) {
                     commands.set(plugin.cmd.toLowerCase(), plugin);
-                    console.log(`✅ Loaded Plugin (Format 1): ${plugin.cmd}`);
-                } 
-                else if (plugin && plugin.pattern && typeof plugin.function === 'function') {
-                    commands.set(plugin.pattern.toLowerCase(), {
-                        cmd: plugin.pattern,
-                        handler: async (sock, msg, from, args, extra) => {
-                            await plugin.function(sock, msg, msg, {
-                                from,
-                                args,
-                                q: args.join(" "),
-                                reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
-                                ...extra
-                            });
-                        }
-                    });
-                    console.log(`✅ Loaded Plugin (Format 2): ${plugin.pattern}`);
+                    console.log(`✅ Loaded Plugin: ${plugin.cmd}`);
                 }
             } catch (err) {
                 console.error(`❌ Error loading plugin ${file}:`, err.message);
@@ -75,7 +59,6 @@ function loadPlugins() {
 
 loadPlugins();
 
-// ☁️ Mega Session Backup
 async function uploadSessionToMega(userJid) {
     try {
         if (!fs.existsSync(AUTH_DIR) || fs.readdirSync(AUTH_DIR).length === 0) return;
@@ -91,7 +74,7 @@ async function uploadSessionToMega(userJid) {
 
         await new Promise((resolve) => output.on('close', resolve));
 
-        console.log('☁️ Uploading Session to Mega...');
+        console.log('☁️ Uploading to Mega...');
         const storage = await new Storage({
             email: MEGA_EMAIL,
             password: MEGA_PASSWORD
@@ -118,7 +101,6 @@ async function uploadSessionToMega(userJid) {
     }
 }
 
-// 📥 Restore Session from Mega Link
 async function downloadSessionFromMega() {
     const sessionUrl = process.env.SESSION_ID;
     if (!sessionUrl) return false;
@@ -152,19 +134,9 @@ async function downloadSessionFromMega() {
     }
 }
 
-// 🚀 Main Bot Function
 async function startBot() {
-    if (isStarting) return;
-    isStarting = true;
-
     if (!fs.existsSync(AUTH_DIR) || fs.readdirSync(AUTH_DIR).length === 0) {
         await downloadSessionFromMega();
-    }
-
-    if (!fs.existsSync(AUTH_DIR) || fs.readdirSync(AUTH_DIR).length === 0) {
-        console.log("⚠️ No Session Found! Ready for Web Pairing Code...");
-        isStarting = false;
-        return;
     }
 
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -189,19 +161,18 @@ async function startBot() {
         const { connection, lastDisconnect } = update;
 
         if (connection === 'close') {
-            isStarting = false;
             const statusCode = lastDisconnect?.error?.output?.statusCode;
-            console.log(`🔴 Connection Closed (Code: ${statusCode}).`);
+            console.log(`🔴 Connection Closed (Code: ${statusCode}). Reconnecting...`);
             if (statusCode !== DisconnectReason.loggedOut) {
                 setTimeout(startBot, 3000);
             } else {
-                console.log('❌ Session Logged Out. Cleaning old auth folder...');
+                console.log('❌ Session Logged Out. Please re-pair!');
                 if (fs.existsSync(AUTH_DIR)) fs.rmSync(AUTH_DIR, { recursive: true, force: true });
             }
         } else if (connection === 'open') {
-            isStarting = false;
             console.log(`🟢 [${BOT_NAME}] Connected successfully!`);
 
+            // Send AKASH-MD Connection Message to Owner Number
             try {
                 const ownerJid = `${OWNER_NUMBER}@s.whatsapp.net`;
                 const connectMsg = `
@@ -213,10 +184,17 @@ async function startBot() {
 *│  ✅ *CONNECTED SUCCESSFULLY!*
 *└───────────────────┘*
 
-*📌 *Bot Name:* ${BOT_NAME}*
-*👤 *Owner Number:* ${OWNER_NUMBER}*
-*⚡ *Prefix:* [ ${PREFIX} ]*
-*🕒 *Connected Time:* ${new Date().toLocaleTimeString()}*
+*📌 *Bot Name:*AKASH-MD*
+*👤 *Owner Number:*${OWNER_NUMBER}*
+*⚡ *Prefix:*[ ${PREFIX} ]*
+*🕒 *Connected Time:*${new Date().toLocaleTimeString()}*
+
+*┌───────────────────┐*
+*│  ⚙️ *SYSTEM INFORMATION*
+*└───────────────────┘*
+* 💾 *RAM Usage: *${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB*
+* 🚀 *Speed:*Fast & Stable*
+* 🌐 *Status:*Active & Online*
 
 > *AKASH-MD WhatsApp Bot is ready to use! Enjoy.* ✨
 `;
@@ -324,48 +302,21 @@ app.get('/', (req, res) => {
     `);
 });
 
-// 📱 Clean Working Pairing Route
 app.get('/pair', async (req, res) => {
     let num = req.query.num;
     if (!num) return res.status(400).json({ error: 'Number required' });
     num = num.replace(/[^0-9]/g, '');
 
     try {
-        // Clear old auth_info if exists to avoid conflicts
-        if (fs.existsSync(AUTH_DIR)) {
-            fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+        if (!sock || !sock.authState.creds.registered) {
+            await delay(1500);
+            const code = await sock.requestPairingCode(num);
+            return res.json({ code: code?.match(/.{1,4}/g)?.join("-") || code });
+        } else {
+            return res.json({ error: 'Already connected!' });
         }
-        fs.mkdirSync(AUTH_DIR, { recursive: true });
-
-        const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-        const { version } = await fetchLatestBaileysVersion();
-
-        const pairSock = makeWASocket({
-            version,
-            logger: pino({ level: 'silent' }),
-            auth: state,
-            browser: Browsers.ubuntu('Chrome'),
-            printQRInTerminal: false
-        });
-
-        pairSock.ev.on('creds.update', saveCreds);
-
-        await delay(2000);
-        const code = await pairSock.requestPairingCode(num);
-
-        pairSock.ev.on('connection.update', async (update) => {
-            const { connection } = update;
-            if (connection === 'open') {
-                console.log('🎉 Pairing successful! Launching Main Bot...');
-                await delay(2000);
-                startBot();
-            }
-        });
-
-        return res.json({ code: code?.match(/.{1,4}/g)?.join("-") || code });
     } catch (err) {
-        console.error("Pairing Error:", err.message);
-        return res.status(500).json({ error: 'Pairing failed: ' + err.message });
+        return res.status(500).json({ error: 'Pairing failed' });
     }
 });
 
