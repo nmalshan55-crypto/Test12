@@ -12,33 +12,83 @@ const DEFAULT_FOOTER = "> *✦ ᴘᴏᴡᴇʀᴇᴅ ʙʏ 𝙰𝙺𝙰𝚂🇭 �
 const pendingSearch = new Map();
 const pendingQuality = new Map();
 
-// Helper to safely parse links array from API response
-function extractDownloadLinks(data) {
-  if (!data) return [];
-  
-  // 1. Direct array checks
-  let links = data.download_links || data.dl_links || data.links || data.downloadLinks || data.servers || data.episodes || [];
-  
-  if (Array.isArray(links) && links.length > 0) {
-    return links.map(item => {
-      if (typeof item === 'string') {
-        return { quality: "Standard HD / Direct Stream", link: item };
+// Deep recursive extractor for video proxy / stream links from Chama API
+function extractDownloadLinks(obj) {
+  let foundLinks = [];
+
+  if (!obj) return foundLinks;
+
+  // Internal recursive helper
+  function traverse(item) {
+    if (!item) return;
+
+    if (typeof item === 'string') {
+      // Check if string is a direct proxy video/hls/m3u8 link or download url
+      if (item.startsWith("http") && (item.includes("/proxy?") || item.includes(".m3u8") || item.includes(".mp4") || item.includes("vod"))) {
+        foundLinks.push({ quality: "Direct Video Stream (HD)", link: item, size: "" });
       }
-      return {
-        quality: item.quality || item.title || item.name || item.server || item.resolution || "Direct Video Stream",
-        link: item.link || item.url || item.download_url || item.href || item.src,
-        size: item.size || ""
-      };
-    }).filter(item => item.link);
+      return;
+    }
+
+    if (Array.isArray(item)) {
+      item.forEach(elem => traverse(elem));
+      return;
+    }
+
+    if (typeof item === 'object') {
+      // Check for known array properties first
+      const possibleArrays = item.download_links || item.dl_links || item.links || item.downloadLinks || item.servers || item.episodes || item.qualities;
+      if (Array.isArray(possibleArrays) && possibleArrays.length > 0) {
+        possibleArrays.forEach(d => {
+          if (typeof d === 'string') {
+            foundLinks.push({ quality: "Standard HD Stream", link: d, size: "" });
+          } else if (d && typeof d === 'object') {
+            const url = d.link || d.url || d.download_url || d.href || d.src || d.proxy_url;
+            if (url) {
+              foundLinks.push({
+                quality: d.quality || d.title || d.name || d.server || d.resolution || "HD Stream",
+                link: url,
+                size: d.size ? ` (${d.size})` : ""
+              });
+            }
+          }
+        });
+        return;
+      }
+
+      // Check single link keys
+      const singleUrl = item.direct_link || item.download_url || item.stream_url || item.proxy_url || item.video_url || item.download || item.stream || item.proxy;
+      if (singleUrl && typeof singleUrl === 'string' && singleUrl.startsWith("http")) {
+        foundLinks.push({
+          quality: item.quality || item.title || "Direct Download / Stream",
+          link: singleUrl,
+          size: item.size ? ` (${item.size})` : ""
+        });
+        return;
+      }
+
+      // Recursive check nested objects
+      for (const key in item) {
+        if (Object.prototype.hasOwnProperty.call(item, key) && key !== "q" && key !== "referer") {
+          traverse(item[key]);
+        }
+      }
+    }
   }
 
-  // 2. Single direct link properties check
-  const singleUrl = data.direct_link || data.download_url || data.stream_url || data.proxy_url || data.video_url || data.url || data.link;
-  if (singleUrl && typeof singleUrl === 'string' && singleUrl.startsWith("http")) {
-    return [{ quality: "Direct Download / Stream", link: singleUrl, size: "" }];
+  traverse(obj);
+
+  // Remove duplicate URLs
+  const uniqueLinks = [];
+  const map = new Map();
+  for (const item of foundLinks) {
+    if(!map.has(item.link)){
+        map.set(item.link, true);
+        uniqueLinks.push(item);
+    }
   }
 
-  return [];
+  return uniqueLinks;
 }
 
 module.exports = {
@@ -53,7 +103,7 @@ module.exports = {
 
     if (!query) {
       return sock.sendMessage(from, {
-        text: `🎬 *LAKVISION MOVIE & SERIES SEARCH*\n\nUsage: \`.lak <movie_name>\`\nExample: \`.lak Kinduru Kumariyo\`\n\n${DEFAULT_FOOTER}`
+        text: `🎬 *LAKVISION MOVIE & SERIES SEARCH*\n\nUsage: \`.lak <movie_name>\`\nExample: \`.lak VEERA\`\n\n${DEFAULT_FOOTER}`
       }, { quoted: msg });
     }
 
@@ -120,18 +170,13 @@ module.exports = {
           
           const response = await axios.get(infoUrl, { timeout: 20000 });
           const rawData = response.data;
-          const movieData = rawData?.data || rawData?.result || rawData;
 
-          if (!movieData) {
-            return sock.sendMessage(from, { text: "❌ *Failed to retrieve download details for this title.*" }, { quoted: msg });
-          }
-
-          const title = movieData.title || selected.title || "Movie / Episode";
-          const thumbnail = movieData.image || movieData.thumbnail || movieData.poster || selected.thumb || "";
-          const description = movieData.description || movieData.desc || "N/A";
+          const title = rawData?.title || rawData?.data?.title || selected.title || "Movie / Episode";
+          const thumbnail = rawData?.image || rawData?.data?.image || rawData?.thumbnail || selected.thumb || "";
+          const description = rawData?.description || rawData?.data?.description || "N/A";
           
-          // Extract links array safely using our upgraded extractor
-          const dlLinks = extractDownloadLinks(movieData);
+          // Deep extract links using recursively traverse
+          const dlLinks = extractDownloadLinks(rawData);
 
           let detailsText = `🎬 *${title}*\n\n`;
           if (description !== "N/A" && description.length > 5) {
@@ -143,7 +188,7 @@ module.exports = {
             dlLinks.forEach((d, i) => {
               const qNum = (i + 1).toString().padStart(2, "0");
               const quality = d.quality;
-              const size = d.size ? ` (${d.size})` : "";
+              const size = d.size;
               detailsText += `*${qNum}* ❯❯ ${quality}${size}\n`;
             });
 
@@ -153,7 +198,6 @@ module.exports = {
             pendingQuality.set(sender, { title, dlLinks, timestamp: Date.now() });
 
           } else {
-            // Fallback: If no links array was parsed, show page/watch link
             detailsText += `⚠️ *No video stream parsed directly by API.*\n🔗 *Watch / Download Link:*\n${targetUrl}\n\n${DEFAULT_FOOTER}`;
           }
 
@@ -208,7 +252,7 @@ module.exports = {
 
         } catch (error) {
           console.error("Direct File Upload Error:", error.message);
-          // Fallback if file exceeds WhatsApp limits or stream fails
+          // Fallback if direct stream fails
           await sock.sendMessage(from, { 
             text: `🎬 *${title}*\n📊 *Quality:* ${qualityName}\n\n⚠️ *Direct stream failed! Here is your Direct Download Link:*\n🔗 ${fileUrl}\n\n${DEFAULT_FOOTER}` 
           }, { quoted: msg });
@@ -220,3 +264,4 @@ module.exports = {
     return false;
   }
 };
+
