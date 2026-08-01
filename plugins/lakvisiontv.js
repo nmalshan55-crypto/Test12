@@ -15,15 +15,12 @@ const pendingQuality = new Map();
 // Deep recursive extractor for video proxy / stream links from Chama API
 function extractDownloadLinks(obj) {
   let foundLinks = [];
-
   if (!obj) return foundLinks;
 
-  // Internal recursive helper
   function traverse(item) {
     if (!item) return;
 
     if (typeof item === 'string') {
-      // Check if string is a direct proxy video/hls/m3u8 link or download url
       if (item.startsWith("http") && (item.includes("/proxy?") || item.includes(".m3u8") || item.includes(".mp4") || item.includes("vod"))) {
         foundLinks.push({ quality: "Direct Video Stream (HD)", link: item, size: "" });
       }
@@ -36,7 +33,6 @@ function extractDownloadLinks(obj) {
     }
 
     if (typeof item === 'object') {
-      // Check for known array properties first
       const possibleArrays = item.download_links || item.dl_links || item.links || item.downloadLinks || item.servers || item.episodes || item.qualities;
       if (Array.isArray(possibleArrays) && possibleArrays.length > 0) {
         possibleArrays.forEach(d => {
@@ -56,7 +52,6 @@ function extractDownloadLinks(obj) {
         return;
       }
 
-      // Check single link keys
       const singleUrl = item.direct_link || item.download_url || item.stream_url || item.proxy_url || item.video_url || item.download || item.stream || item.proxy;
       if (singleUrl && typeof singleUrl === 'string' && singleUrl.startsWith("http")) {
         foundLinks.push({
@@ -67,7 +62,6 @@ function extractDownloadLinks(obj) {
         return;
       }
 
-      // Recursive check nested objects
       for (const key in item) {
         if (Object.prototype.hasOwnProperty.call(item, key) && key !== "q" && key !== "referer") {
           traverse(item[key]);
@@ -78,7 +72,6 @@ function extractDownloadLinks(obj) {
 
   traverse(obj);
 
-  // Remove duplicate URLs
   const uniqueLinks = [];
   const map = new Map();
   for (const item of foundLinks) {
@@ -119,10 +112,7 @@ module.exports = {
         return sock.sendMessage(from, { text: `❌ *No movies or series found for "${query}"!*` }, { quoted: msg });
       }
 
-      // Limit results up to 30 as requested
       const searchResults = results.slice(0, 30);
-      
-      // Save state for direct reply (1, 2, 3...)
       pendingSearch.set(sender, { results: searchResults, timestamp: Date.now() });
 
       let text = `🎬 *LAKVISION SEARCH RESULTS*\n\n`;
@@ -141,18 +131,15 @@ module.exports = {
     }
   },
 
-  // 2. DIRECT REPLY LISTENER (Catches simple text replies like '1', '2', '03')
+  // 2. DIRECT REPLY LISTENER
   onText: async (sock, msg, from, body) => {
     const sender = msg.key.participant || msg.key.remoteJid;
     const input = body ? body.trim() : "";
 
-    // Check if input is a pure number
     if (isNaN(input) || input === "") return false;
     const num = parseInt(input, 10);
 
-    // -------------------------------------------------------------
-    // STEP 1: Process Search Result Selection (Replies '1' to '30')
-    // -------------------------------------------------------------
+    // STEP 1: Process Search Result Selection
     if (pendingSearch.has(sender)) {
       const session = pendingSearch.get(sender);
 
@@ -160,7 +147,7 @@ module.exports = {
         await sock.sendMessage(from, { react: { text: "⏳", key: msg.key } });
 
         const selected = session.results[num - 1];
-        pendingSearch.delete(sender); // Clear search session
+        pendingSearch.delete(sender);
 
         await sock.sendMessage(from, { text: "📥 *Fetching details & download links...*" }, { quoted: msg });
 
@@ -175,7 +162,6 @@ module.exports = {
           const thumbnail = rawData?.image || rawData?.data?.image || rawData?.thumbnail || selected.thumb || "";
           const description = rawData?.description || rawData?.data?.description || "N/A";
           
-          // Deep extract links using recursively traverse
           const dlLinks = extractDownloadLinks(rawData);
 
           let detailsText = `🎬 *${title}*\n\n`;
@@ -194,7 +180,6 @@ module.exports = {
 
             detailsText += `\n💡 *Reply with the Quality number (e.g., 1) to start direct download.*\n\n${DEFAULT_FOOTER}`;
             
-            // Save state for quality reply
             pendingQuality.set(sender, { title, dlLinks, timestamp: Date.now() });
 
           } else {
@@ -216,9 +201,7 @@ module.exports = {
       }
     }
 
-    // -------------------------------------------------------------
-    // STEP 2: Process Quality Selection & Direct Document Download
-    // -------------------------------------------------------------
+    // STEP 2: Process Quality Selection & Direct Stream Buffer Upload
     if (pendingQuality.has(sender)) {
       const session = pendingQuality.get(sender);
 
@@ -226,7 +209,7 @@ module.exports = {
         await sock.sendMessage(from, { react: { text: "⬇️", key: msg.key } });
 
         const { title, dlLinks } = session;
-        pendingQuality.delete(sender); // Clear quality session
+        pendingQuality.delete(sender);
 
         const selectedDl = dlLinks[num - 1];
         let fileUrl = selectedDl.link;
@@ -238,13 +221,29 @@ module.exports = {
         }
 
         await sock.sendMessage(from, { 
-          text: `⬇️ *Preparing & Uploading ${qualityName} directly to WhatsApp...*\n*Please wait a few moments...*` 
+          text: `⬇️ *Downloading & Sending ${qualityName} directly to WhatsApp...*\n*Please wait...*` 
         }, { quoted: msg });
 
         try {
-          // Send video file directly as Document with Custom Footer
+          // Download video binary stream using Axios with User-Agent
+          const videoResponse = await axios.get(fileUrl, {
+            responseType: 'arraybuffer',
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+            },
+            timeout: 120000
+          });
+
+          const videoBuffer = Buffer.from(videoResponse.data);
+
+          // Check if buffer is actually a valid video (More than 100KB)
+          if (videoBuffer.length < 100 * 1024) {
+            throw new Error("File too small or restricted proxy URL.");
+          }
+
+          // Send Buffer as Video Document
           await sock.sendMessage(from, {
-            document: { url: fileUrl },
+            document: videoBuffer,
             mimetype: "video/mp4",
             fileName: `${title} - ${qualityName}.mp4`.replace(/[^\w\s.-]/gi, ""),
             caption: `🎬 *${title}*\n📊 *Quality:* ${qualityName}\n\n${DEFAULT_FOOTER}`
@@ -252,9 +251,9 @@ module.exports = {
 
         } catch (error) {
           console.error("Direct File Upload Error:", error.message);
-          // Fallback if direct stream fails
+          // Fallback direct URL message if stream buffer fails or file too large for Heroku RAM
           await sock.sendMessage(from, { 
-            text: `🎬 *${title}*\n📊 *Quality:* ${qualityName}\n\n⚠️ *Direct stream failed! Here is your Direct Download Link:*\n🔗 ${fileUrl}\n\n${DEFAULT_FOOTER}` 
+            text: `🎬 *${title}*\n📊 *Quality:* ${qualityName}\n\n⚠️ *Direct video stream sending failed! Here is your Direct Download Link:*\n🔗 ${fileUrl}\n\n${DEFAULT_FOOTER}` 
           }, { quoted: msg });
         }
         return true;
